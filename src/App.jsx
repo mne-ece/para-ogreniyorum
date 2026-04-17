@@ -60,50 +60,70 @@ function fmt(k) {
 function randFrom(arr) { return arr[Math.floor(Math.random()*arr.length)]; }
 
 /* ═══════════════════════════════════════════════════════════════════
-   STORAGE LAYER
+   STORAGE LAYER — localStorage (Vercel'de çalışır)
 ═══════════════════════════════════════════════════════════════════ */
-async function saveUser(uid, data) {
-  try { await window.storage.set(`user:${uid}`, JSON.stringify(data)); } catch(e){}
+function saveUser(uid, data) {
+  try { localStorage.setItem(`po_user:${uid}`, JSON.stringify(data)); } catch(e){}
 }
-async function loadUser(uid) {
-  try {
-    const r = await window.storage.get(`user:${uid}`);
-    return r ? JSON.parse(r.value) : null;
-  } catch(e){ return null; }
+function loadUser(uid) {
+  try { const r=localStorage.getItem(`po_user:${uid}`); return r?JSON.parse(r):null; } catch(e){ return null; }
 }
-async function saveSession(uid) {
-  try { await window.storage.set("session", uid); } catch(e){}
+function saveSession(uid) {
+  try { localStorage.setItem("po_session", uid); } catch(e){}
 }
-async function loadSession() {
-  try { const r=await window.storage.get("session"); return r?r.value:null; } catch(e){ return null; }
+function loadSession() {
+  try { return localStorage.getItem("po_session"); } catch(e){ return null; }
 }
-async function clearSession() {
-  try { await window.storage.delete("session"); } catch(e){}
+function clearSession() {
+  try { localStorage.removeItem("po_session"); } catch(e){}
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   GOOGLE OAUTH SIMULATION
-   (Real implementation: firebase.auth().signInWithPopup(googleProvider))
+   E-POSTA AUTH — kayıt & giriş
+═══════════════════════════════════════════════════════════════════ */
+function getAllUsers() {
+  try { return JSON.parse(localStorage.getItem("po_all_users")||"{}"); } catch(e){ return {}; }
+}
+function saveAllUsers(db) {
+  try { localStorage.setItem("po_all_users",JSON.stringify(db)); } catch(e){}
+}
+// Şifre hash (basit — gerçek projede bcrypt kullan)
+function hashPass(p) {
+  let h=0; for(let i=0;i<p.length;i++){h=((h<<5)-h)+p.charCodeAt(i);h|=0;} return String(h);
+}
+function emailRegister(name, email, password) {
+  const db = getAllUsers();
+  const key = email.toLowerCase().trim();
+  if(db[key]) return {ok:false, err:"Bu e-posta zaten kayıtlı."};
+  const uid = `e_${Date.now()}`;
+  const user = { uid, name, email:key, provider:"email", avatar:"🦊",
+    score:0, totalCorrect:0, maxStreak:0, shopWins:0, achievements:[] };
+  db[key] = { uid, hash:hashPass(password) };
+  saveAllUsers(db);
+  saveUser(uid, user);
+  return {ok:true, user};
+}
+function emailLogin(email, password) {
+  const db = getAllUsers();
+  const key = email.toLowerCase().trim();
+  const rec = db[key];
+  if(!rec) return {ok:false, err:"Bu e-posta ile kayıtlı hesap bulunamadı."};
+  if(rec.hash !== hashPass(password)) return {ok:false, err:"Şifre hatalı."};
+  const user = loadUser(rec.uid);
+  return {ok:true, user};
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   GOOGLE / APPLE OAUTH SİMÜLASYONU
 ═══════════════════════════════════════════════════════════════════ */
 function simulateGoogleAuth() {
   return new Promise(resolve => {
-    const names = [
-      {name:"Ahmet Yılmaz", email:"ahmet.yilmaz@gmail.com", picture:"👦"},
-      {name:"Elif Kaya",    email:"elif.kaya@gmail.com",    picture:"👧"},
-      {name:"Can Demir",    email:"can.demir@gmail.com",    picture:"🧒"},
-      {name:"Zeynep Çelik", email:"zeynep.celik@gmail.com", picture:"👩"},
-    ];
-    // Simulate OAuth popup delay
-    setTimeout(()=>resolve({ provider:"google", ...randFrom(names), uid:`g_${Date.now()}` }), 1400);
+    setTimeout(()=>resolve({ provider:"google", uid:`g_${Date.now()}` }), 1200);
   });
 }
 function simulateAppleAuth() {
   return new Promise(resolve => {
-    const names = [
-      {name:"Mehmet A.",  email:"mehmet@icloud.com", picture:"👨"},
-      {name:"Ayşe A.",    email:"ayse@icloud.com",   picture:"👩"},
-    ];
-    setTimeout(()=>resolve({ provider:"apple", ...randFrom(names), uid:`a_${Date.now()}` }), 1200);
+    setTimeout(()=>resolve({ provider:"apple", uid:`a_${Date.now()}` }), 1000);
   });
 }
 
@@ -343,105 +363,202 @@ function Onboarding({onDone}) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   AUTH SCREEN — Real Google & Apple OAuth UI
+   AUTH SCREEN — E-posta + Google + Apple
 ═══════════════════════════════════════════════════════════════════ */
 function AuthScreen({onLogin}) {
-  const [loading, setLoading] = useState(null); // "google"|"apple"
+  const [tab,     setTab]     = useState("login");   // "login" | "register"
+  const [loading, setLoading] = useState(null);
+  const [name,    setName]    = useState("");
+  const [email,   setEmail]   = useState("");
+  const [pass,    setPass]    = useState("");
+  const [pass2,   setPass2]   = useState("");
+  const [showPass,setShowPass]= useState(false);
+  const [err,     setErr]     = useState("");
+  const [success, setSuccess] = useState("");
 
+  const reset = () => { setErr(""); setSuccess(""); };
+
+  // ── E-posta giriş ──
+  const handleEmailLogin = () => {
+    reset();
+    if(!email||!pass){ setErr("E-posta ve şifre gereklidir."); return; }
+    const r = emailLogin(email, pass);
+    if(!r.ok){ setErr(r.err); return; }
+    onLogin(r.user);
+  };
+
+  // ── E-posta kayıt ──
+  const handleEmailRegister = () => {
+    reset();
+    if(!name.trim()){ setErr("Adınızı giriniz."); return; }
+    if(!email||!pass){ setErr("Tüm alanları doldurunuz."); return; }
+    if(!/\S+@\S+\.\S+/.test(email)){ setErr("Geçerli bir e-posta giriniz."); return; }
+    if(pass.length<6){ setErr("Şifre en az 6 karakter olmalı."); return; }
+    if(pass!==pass2){ setErr("Şifreler eşleşmiyor."); return; }
+    const r = emailRegister(name.trim(), email, pass);
+    if(!r.ok){ setErr(r.err); return; }
+    setSuccess("Kayıt başarılı! Giriş yapılıyor...");
+    setTimeout(()=>onLogin(r.user), 1000);
+  };
+
+  // ── Google ──
   const handleGoogle = async () => {
-    setLoading("google");
-    try {
-      const profile = await simulateGoogleAuth();
-      onLogin(profile);
-    } catch(e){ setLoading(null); }
+    setLoading("google"); reset();
+    const profile = await simulateGoogleAuth();
+    // Google ile daha önce giriş yaptıysa aynı uid'yi kullan
+    const existing = loadUser(profile.uid);
+    if(existing){ onLogin(existing); return; }
+    onLogin(profile);
   };
 
+  // ── Apple ──
   const handleApple = async () => {
-    setLoading("apple");
-    try {
-      const profile = await simulateAppleAuth();
-      onLogin(profile);
-    } catch(e){ setLoading(null); }
+    setLoading("apple"); reset();
+    const profile = await simulateAppleAuth();
+    const existing = loadUser(profile.uid);
+    if(existing){ onLogin(existing); return; }
+    onLogin(profile);
   };
+
+  const inp = (val,set,ph,type="text") => (
+    <input value={val} onChange={e=>{set(e.target.value);setErr("");}}
+      placeholder={ph} type={type}
+      style={{width:"100%",fontSize:14,fontWeight:700,padding:"12px 14px",
+        border:`2px solid ${err&&!val?"#E84545":T.border}`,borderRadius:12,
+        color:T.text,background:"#FAFAFA",marginBottom:10,transition:"border 0.2s"}}/>
+  );
 
   return (
     <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#1A1A2E 0%,#16213E 50%,#0F3460 100%)",
-      display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24}}>
+      display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+      padding:20,overflowY:"auto"}}>
 
-      {/* Logo area */}
-      <div className="fade-in" style={{textAlign:"center",marginBottom:40}}>
-        <div style={{width:90,height:90,background:"linear-gradient(135deg,#E84545,#C0392B)",
-          borderRadius:26,display:"flex",alignItems:"center",justifyContent:"center",
-          fontSize:48,margin:"0 auto 16px",boxShadow:"0 12px 36px rgba(232,69,69,0.45)"}}>
+      {/* Logo */}
+      <div className="fade-in" style={{textAlign:"center",marginBottom:28}}>
+        <div style={{width:80,height:80,background:"linear-gradient(135deg,#E84545,#C0392B)",
+          borderRadius:24,display:"flex",alignItems:"center",justifyContent:"center",
+          fontSize:42,margin:"0 auto 14px",boxShadow:"0 12px 36px rgba(232,69,69,0.45)"}}>
           🏪
         </div>
-        <h1 style={{fontFamily:"'Baloo 2',cursive",fontSize:30,fontWeight:800,color:"#fff",margin:"0 0 6px"}}>
+        <h1 style={{fontFamily:"'Baloo 2',cursive",fontSize:26,fontWeight:800,color:"#fff",margin:"0 0 4px"}}>
           Para Öğreniyorum
         </h1>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-          <div style={{width:24,height:3,background:"linear-gradient(90deg,#E84545,transparent)"}}/>
-          <span style={{fontSize:12,color:"rgba(255,255,255,0.5)",fontWeight:700,letterSpacing:2}}>TÜRK LİRASI EĞİTİMİ</span>
-          <div style={{width:24,height:3,background:"linear-gradient(270deg,#E84545,transparent)"}}/>
-        </div>
+        <span style={{fontSize:11,color:"rgba(255,255,255,0.4)",fontWeight:700,letterSpacing:2}}>
+          TÜRK LİRASI EĞİTİMİ
+        </span>
       </div>
 
-      {/* Auth card */}
-      <div className="slide-up card" style={{width:"100%",maxWidth:360,padding:"28px 24px"}}>
-        <div style={{textAlign:"center",marginBottom:24}}>
-          <div style={{fontSize:16,fontWeight:900,color:T.text}}>Giriş Yap</div>
-          <div style={{fontSize:13,color:T.sub,fontWeight:600,marginTop:4}}>
-            Puanlarını kaydetmek için hesabınla bağlan
-          </div>
+      {/* Kart */}
+      <div className="slide-up card" style={{width:"100%",maxWidth:360,padding:"24px 22px"}}>
+
+        {/* Tab */}
+        <div style={{display:"flex",background:"#F5F5F5",borderRadius:14,padding:3,marginBottom:20}}>
+          {["login","register"].map(t=>(
+            <button key={t} onClick={()=>{setTab(t);reset();}}
+              style={{flex:1,padding:"9px",borderRadius:11,border:"none",
+                background:tab===t?"#fff":"transparent",
+                fontSize:13,fontWeight:900,
+                color:tab===t?T.primary:T.sub,
+                boxShadow:tab===t?"0 2px 8px rgba(0,0,0,0.1)":"none",
+                transition:"all 0.2s"}}>
+              {t==="login"?"Giriş Yap":"Kayıt Ol"}
+            </button>
+          ))}
         </div>
 
-        {/* Google Button — Official styling */}
+        {/* Form */}
+        {tab==="register" && inp(name,setName,"Adınız (örn: Mehmet)")}
+        {inp(email,setEmail,"E-posta adresiniz","email")}
+
+        {/* Şifre + göster/gizle */}
+        <div style={{position:"relative",marginBottom:10}}>
+          <input value={pass} onChange={e=>{setPass(e.target.value);setErr("");}}
+            placeholder="Şifre (en az 6 karakter)"
+            type={showPass?"text":"password"}
+            style={{width:"100%",fontSize:14,fontWeight:700,padding:"12px 44px 12px 14px",
+              border:`2px solid ${T.border}`,borderRadius:12,color:T.text,background:"#FAFAFA"}}/>
+          <button onClick={()=>setShowPass(s=>!s)}
+            style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",
+              background:"none",border:"none",fontSize:18,color:T.sub,padding:0,cursor:"pointer"}}>
+            {showPass?"🙈":"👁️"}
+          </button>
+        </div>
+
+        {tab==="register" && inp(pass2,setPass2,"Şifreyi tekrar girin","password")}
+
+        {/* Hata / Başarı */}
+        {err && (
+          <div style={{background:"#FFEBEE",border:"1.5px solid #FFCDD2",borderRadius:10,
+            padding:"9px 12px",marginBottom:10,fontSize:12,fontWeight:700,color:"#C62828",
+            display:"flex",alignItems:"center",gap:6}}>
+            ⚠️ {err}
+          </div>
+        )}
+        {success && (
+          <div style={{background:"#E8F5E9",border:"1.5px solid #C8E6C9",borderRadius:10,
+            padding:"9px 12px",marginBottom:10,fontSize:12,fontWeight:700,color:"#2E7D32",
+            display:"flex",alignItems:"center",gap:6}}>
+            ✅ {success}
+          </div>
+        )}
+
+        {/* Submit */}
+        <button className="btn-press"
+          onClick={tab==="login"?handleEmailLogin:handleEmailRegister}
+          style={{width:"100%",background:"linear-gradient(135deg,#E84545,#C0392B)",
+            color:"#fff",border:"none",borderRadius:14,padding:"14px",
+            fontSize:15,fontWeight:900,marginBottom:18,
+            boxShadow:"0 6px 18px rgba(232,69,69,0.35)"}}>
+          {tab==="login"?"Giriş Yap →":"Hesap Oluştur →"}
+        </button>
+
+        {/* Ayırıcı */}
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+          <div style={{flex:1,height:1,background:T.border}}/>
+          <span style={{fontSize:11,fontWeight:700,color:T.sub}}>veya</span>
+          <div style={{flex:1,height:1,background:T.border}}/>
+        </div>
+
+        {/* Google */}
         <button className="btn-press" onClick={handleGoogle} disabled={!!loading}
-          style={{
-            width:"100%",background:"#fff",border:"1.5px solid #DADCE0",
-            borderRadius:12,padding:"13px 20px",marginBottom:12,
-            display:"flex",alignItems:"center",justifyContent:"center",gap:12,
-            boxShadow:"0 2px 8px rgba(0,0,0,0.1)",
-            opacity:loading&&loading!=="google"?0.5:1,
-          }}>
-          {loading==="google" ? <Spinner size={22} color="#4285F4"/> : (
-            <svg width="22" height="22" viewBox="0 0 24 24">
+          style={{width:"100%",background:"#fff",border:"1.5px solid #DADCE0",
+            borderRadius:12,padding:"12px 20px",marginBottom:10,
+            display:"flex",alignItems:"center",justifyContent:"center",gap:10,
+            boxShadow:"0 2px 8px rgba(0,0,0,0.08)",
+            opacity:loading&&loading!=="google"?0.5:1}}>
+          {loading==="google" ? <Spinner size={20} color="#4285F4"/> : (
+            <svg width="20" height="20" viewBox="0 0 24 24">
               <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
               <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
               <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
               <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
             </svg>
           )}
-          <span style={{fontSize:15,fontWeight:700,color:"#3C4043"}}>Google ile devam et</span>
+          <span style={{fontSize:14,fontWeight:700,color:"#3C4043"}}>Google ile devam et</span>
         </button>
 
-        {/* Apple Button — Official styling */}
+        {/* Apple */}
         <button className="btn-press" onClick={handleApple} disabled={!!loading}
-          style={{
-            width:"100%",background:"#000",border:"1.5px solid #000",
-            borderRadius:12,padding:"13px 20px",marginBottom:20,
-            display:"flex",alignItems:"center",justifyContent:"center",gap:12,
+          style={{width:"100%",background:"#111",border:"1.5px solid #111",
+            borderRadius:12,padding:"12px 20px",
+            display:"flex",alignItems:"center",justifyContent:"center",gap:10,
             boxShadow:"0 2px 8px rgba(0,0,0,0.2)",
-            opacity:loading&&loading!=="apple"?0.5:1,
-          }}>
-          {loading==="apple" ? <Spinner size={22} color="#fff"/> : (
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="white">
+            opacity:loading&&loading!=="apple"?0.5:1}}>
+          {loading==="apple" ? <Spinner size={20} color="#fff"/> : (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
               <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
             </svg>
           )}
-          <span style={{fontSize:15,fontWeight:700,color:"#fff"}}>Apple ile devam et</span>
+          <span style={{fontSize:14,fontWeight:700,color:"#fff"}}>Apple ile devam et</span>
         </button>
 
-        <div style={{textAlign:"center",padding:"0 8px"}}>
-          <div style={{height:1,background:T.border,marginBottom:14}}/>
-          <p style={{fontSize:11,color:T.sub,fontWeight:600,lineHeight:1.6}}>
-            🔒 Giriş yaparak <span style={{color:T.primary,fontWeight:800}}>Gizlilik Politikası</span> ve{" "}
-            <span style={{color:T.primary,fontWeight:800}}>Kullanım Şartları</span>'nı kabul etmiş olursunuz.
-          </p>
-        </div>
+        <p style={{textAlign:"center",fontSize:10,color:T.sub,fontWeight:600,marginTop:16,lineHeight:1.6}}>
+          🔒 Devam ederek <span style={{color:T.primary,fontWeight:800}}>Gizlilik Politikası</span>'nı kabul etmiş olursunuz.
+        </p>
       </div>
 
-      <p style={{color:"rgba(255,255,255,0.3)",fontSize:11,fontWeight:600,textAlign:"center",marginTop:20,padding:"0 20px"}}>
-        Uygulama bilgileri için: info@paraogreniyorum.com
+      <p style={{color:"rgba(255,255,255,0.25)",fontSize:10,fontWeight:600,textAlign:"center",marginTop:16}}>
+        Para Öğreniyorum © 2025
       </p>
     </div>
   );
@@ -1450,57 +1567,61 @@ export default function App() {
   const [levelUp,setLevelUp]= useState(null);
   const [saving, setSaving] = useState(false);
 
-  // Init
+  // Init — senkron localStorage
   useEffect(()=>{
-    (async()=>{
-      try {
-        const seen = await window.storage.get("onboarding_done");
-        if(!seen) { setAppState("onboarding"); return; }
-        const sid = await loadSession();
-        if(sid){
-          const u = await loadUser(sid);
-          if(u){ setUid(sid); setUser(u); setAppState("app"); return; }
-        }
-        setAppState("auth");
-      } catch(e){ setAppState("onboarding"); }
-    })();
+    try {
+      const seen = localStorage.getItem("po_onboarding");
+      if(!seen){ setAppState("onboarding"); return; }
+      const sid = loadSession();
+      if(sid){
+        const u = loadUser(sid);
+        if(u){ setUid(sid); setUser(u); setAppState("app"); return; }
+      }
+      setAppState("auth");
+    } catch(e){ setAppState("onboarding"); }
   },[]);
 
-  const handleOnboardingDone = async () => {
-    try { await window.storage.set("onboarding_done","1"); } catch(e){}
+  const handleOnboardingDone = () => {
+    try { localStorage.setItem("po_onboarding","1"); } catch(e){}
     setAppState("auth");
   };
 
-  const handleLogin = async (profile) => {
-    // Check if existing user
-    let existing = await loadUser(profile.uid);
-    if(existing) {
+  const handleLogin = (profile) => {
+    // E-posta girişinde user zaten tam obje geliyor
+    if(profile.score !== undefined){
+      setUid(profile.uid); setUser(profile);
+      saveSession(profile.uid);
+      setAppState("app");
+      return;
+    }
+    // Google/Apple — yeni kullanıcıysa profile setup'a gönder
+    const existing = loadUser(profile.uid);
+    if(existing){
       setUid(profile.uid); setUser(existing);
-      await saveSession(profile.uid);
+      saveSession(profile.uid);
       setAppState("app");
     } else {
-      // New user → profile setup
       setUid(profile.uid);
       setUser({...profile, score:0, totalCorrect:0, maxStreak:0, shopWins:0, achievements:[]});
       setAppState("setup");
     }
   };
 
-  const handleProfileSave = async ({avatar, childName}) => {
+  const handleProfileSave = ({avatar, childName}) => {
     const newUser = {...user, avatar, childName};
     setUser(newUser);
-    await saveUser(uid, newUser);
-    await saveSession(uid);
+    saveUser(uid, newUser);
+    saveSession(uid);
     setAppState("app");
   };
 
-  const handleLogout = async () => {
-    await clearSession();
+  const handleLogout = () => {
+    clearSession();
     setUid(null); setUser(null); setScreen("home");
     setAppState("auth");
   };
 
-  const addScore = useCallback(async (pts, mode) => {
+  const addScore = useCallback((pts, mode) => {
     setUser(prev => {
       if(!prev) return prev;
       const prevLv = getLevel(prev.score);
